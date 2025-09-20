@@ -564,18 +564,40 @@ static void virtio_pci_cleanup_interrupts(struct virtio_pci_dev *vpci_dev)
     pci_free_irq_vectors(pdev); 
 }
 
-static int virtio_pci_enable(struct virtio_pci_dev *vpci_dev)
+static int virtio_pci_enable_device(struct virtio_pci_dev *vpci_dev)
 {
-    struct virtio_device *dev = &vpci_dev->virtio_dev; 
+    struct virtio_device *vdev = &vpci_dev->virtio_dev; 
     u8 status; 
 
     /*acknowledge device */ 
     status = ioread8(&vpci_dev->common_cfg->device_status);
     iowrite8(status | VIRTIO_CONFIG_S_ACKNOWLEDGE, &vpci_dev->common_cfg->device_status); 
 
-     
+    /*set driver status*/ 
+    status = ioread8(&vpci_dev->common_cfg->device_status; 
+    ioread8(status | VIRTIO_CONFIG_S_DRIVER, &vpci_dev->common_cfg->device_status); 
+    
+    /*negotiate features */
+    vdev->features = ioread8(&vpci_dev->common_cfg->device_feature); 
+    vdev->features &= (1ULL << VIRTIO_F_VERSION_1); /*virtio 1.0+ */
+    iowrite64(vdev->features, &vpci_dev->common_cfg->driver_feature);
 
+    /*features okay */ 
+    status = ioread8(&vpci_dev->common_cfg->device_status); 
+    iowrite8(status | VIRTIO_CONFIG_S_FEATURES_OK, &vpci_dev->common_cfg->device_status); 
+
+    /*check features*/ 
+    status = ioread8(&vpci_dev->common_cfg->device_status); 
+    if(!(status & VIRTIO_CONFIG_S_FEATURES_OK))
+    {
+        dev_err(vpci_dev->pdev->dev, "Failed to negotiate features\n"); 
+        return -EINVAL; 
+    }
+
+    iowrite8(status | VIRTIO_CONFIG_S_DRIVER_OK, &vpci_dev->common_cfg->device_status);
+    return 0; 
 }
+
 static int virtio_pci_probe(struct pci_dev *pdev, const struct pci_device_id)
 {
 
