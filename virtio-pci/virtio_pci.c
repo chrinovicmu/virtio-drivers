@@ -9,6 +9,9 @@
 #define VIRTIO_PCI_CAP_OFFSET_OFFSET    8  /* offset */
 #define VIRTIO_PCI_CAP_LENGTH_OFFSET   12  /* length */
 
+#define VIRTIO_PCI_MIN_VECTORS          1 
+#define VIRTIO_PCI_MAX_VECTORS          1 
+
 static const struct pci_device_id virtio_pci_id_table[] = {
     {PCI_DEVICE(0x1AF4, PCI_ANY_ID)}, 
     {0}
@@ -297,8 +300,13 @@ static irqreturn_t virtio_pci_interupt(int irq, void *data)
     if(isr->queue_intr)
     {
         dev_dbg(&vpci_dev->pdev->dev, "Queue interrput triggered\n"); 
-        /* TODO: 
-         * Queue interrput : Process virtqueues */ 
+
+        /*if device is a network card */ 
+        if(vpci_dev->virtio_dev.id.device == PCI_DEVICE_ID_VIRTIO_NET)
+        {
+            struct virtio_net_dev *vnet_dev = vpci_dev->virtio_dev.priv; 
+            virtio_net_receive_packet(vnet_dev, NULL, NULL);  
+        }
     }
 
     /*configuration interrput */ 
@@ -316,7 +324,7 @@ static irqreturn_t virtio_pci_interupt(int irq, void *data)
     if(isr_status & ~0x3)
     {
         dev_dbg(&vpci_dev->pdev->dev, "Device-specific interrput status: 0x%x\n", 
-                status & ~0x3);  
+                isr_status & ~0x3);  
         /* TODO: 
          * handle device-specific interrput */ 
     }
@@ -520,20 +528,57 @@ read_error:
 
 }
 
-static int virtio_pci_probe(struct pci_dev *pdev, const struct pci_device_id)
+static int virtio_pci_setup_interrupts(struct virtio_pci_dev *vpci_dev)
 {
-    struct virtio_pci_dev *vpci_dev; 
+    struct pci_dev *pdev = vpci_dev->pdev; 
     int ret; 
 
-    vpci_dev = kzalloc(sizeof(struct virtio_pci_dev), GFP_KERNEL);
-    if(!vpci_dev)
+    /*allocate IRQ vector */ 
+    ret = pci_alloc_irq_vectors(pdev, VIRTIO_PCI_MIN_VECTORS, VIRTIO_PCI_MAX_VECTORS, 
+                                PCI_IRQ_MSI | PCI_IRQ_LEGACY);
+    if(ret < 0)
     {
-        dev_err(&pdev->dev, "Failed to allocate memory for virtio_pci_dev\n"); 
-        return -ENOMEN; 
+        dev_err(&pdev->dev, "Failed to allocate IRQ vectors: %d\n", ret); 
+        return ret; 
     }
 
-    /*Initialize the embedded virtio_device */ 
-    vpci_dev-?virt
+    /*register interrput handler */ 
+    ret = request_irq(pci_irq_vector(pdev, 0), virtio_pci_interupt, IRQF_SHARED,
+                      "virtio-pci", vpci_dev);
+    if(ret)
+    {
+        dev_err(&pdev->dev, "Failed to request IRQ %d\n", ret); 
+        pci_free_irq_vectors(pdev); 
+        return ret; 
+    }
+
+    return 0; 
+}
+
+static void virtio_pci_cleanup_interrupts(struct virtio_pci_dev *vpci_dev)
+{
+    struct pci_dev *pdev = vpci_dev->pdev; 
+
+    /*unregister interrput handler */ 
+    free_irq(pci_irq_vector(pdev, 0), vpci_dev); 
+    pci_free_irq_vectors(pdev); 
+}
+
+static int virtio_pci_enable(struct virtio_pci_dev *vpci_dev)
+{
+    struct virtio_device *dev = &vpci_dev->virtio_dev; 
+    u8 status; 
+
+    /*acknowledge device */ 
+    status = ioread8(&vpci_dev->common_cfg->device_status);
+    iowrite8(status | VIRTIO_CONFIG_S_ACKNOWLEDGE, &vpci_dev->common_cfg->device_status); 
+
+     
+
+}
+static int virtio_pci_probe(struct pci_dev *pdev, const struct pci_device_id)
+{
+
 
 }
 
