@@ -12,11 +12,130 @@
 #define VIRTIO_PCI_MIN_VECTORS          1 
 #define VIRTIO_PCI_MAX_VECTORS          1 
 
+/* Feature selector values */
+#define VIRTIO_FSEL_0_31   0x0   /* Select feature bits 0..31 */
+#define VIRTIO_FSEL_32_63  0x1   /* Select feature bits 32..63 */
+#define VIRTIO_FSEL_64_95  0x2   /* Select feature bits 64..95 (if device supports) */
+#define VIRTIO_FSEL_96_127 0x3   /* Select feature bits 96..127 */
+
+
 static const struct pci_device_id virtio_pci_id_table[] = {
-    {PCI_DEVICE(0x1AF4, PCI_ANY_ID)}, 
+    {PCI_DEVICE(PCI_VENDOR_ID_VIRTIO, PCI_ANY_ID)}, 
     {0}
 };
 MODULE_DEVICE_TABLE(pci, virtio_pci_id_table); 
+
+static void virtio_pci_get(struct virtio_device *vdev, unsigned offset, 
+                           void *buf, unsigned int len)
+{
+    struct virtio_pci_dev *vpci_dev = vdev->priv; 
+
+    void __iomem *device_config = vpci_dev->device_cfg;
+    if(!device_cfg)
+    {
+        dev_err(&vpci_dev->pdev->dev, "No device config region for get at offset %u\n", offset); 
+        return; 
+    }
+
+    switch(len)
+    {
+        case 1:
+            *(u8*)buf = ioread8(device_cfg + offset); 
+            break 
+        case 2: 
+            *(u16*)buf = le16_to_cpu(ioread16(device_cfg + offset)); 
+            break; 
+        case 4:
+            *(u32 *)buf = le32_to_cpu(ioread32(device_cfg + offset)); 
+            break; 
+        
+        default:
+            dev_err(&vpci_dev->pdev->dev "Invaliid get PCI length %u at offset %u\n", len, offset); 
+            break; 
+    }
+}
+
+static void virtio_pci_set(struct virtio_device *vdev, unsigned offset, 
+                           const void *buf, unsigned len)
+{
+    struct virtio_pci_dev *vpci_dev = vdev->priv; 
+    void __iomem *device_cfg = vpci_dev->device_cfg; 
+
+    switch(len)
+    {
+        case 1: 
+            iowrite8(*(u8*)buf, device_cfg + offset); 
+            break;
+        case 2: 
+            iowrite16(cpu_to_le16(*(16*)buf), device_cfg + offset);
+            break; 
+        case 4:
+            iowrite32(cpu_to_le32(*(16*)buf), device_cfg + offset); 
+            break; 
+
+        default:
+            dev_err(&vpci_dev->pdev->dev , "Invalid set PCI %u at offset %u\n", len, offset); 
+            break; 
+    }
+}
+
+/*return generation number to detect if the config changed while reading
+ * (for atomic snapshop constistency) */ 
+static u32 virtio_pci_generation(struct virtio_device *vdev)
+{
+    struct virtio_pci_dev *vpci_dev = vdev->priv; 
+    return ioread8(&vpci_dev->common_cfg->config_generation); 
+}
+
+static u8 virtio_pci_get_status(struct virtio_device *vdev)
+{
+    struct virtio_pci_dev *vpci_dev = vdev->priv; 
+    return ioread8(&vpci_dev->common_cfg->device_status); 
+}
+
+static void virtio_pci_set_status(struct virtio_device *vdev, u8 status)
+{
+    struct virtio_pci_dev *vpci_dev = vdev->priv;
+    iowrite8(status, &vpci_dev->common_cfg->device_status);  
+}
+
+static void virtio_pci_reset(struct virtio_device *vdev)  
+{
+    struct virtio_pci_dev *vpci_dev = vdev->priv;  
+    iowrite8(0, &vpci_dev->common_cfg->device_status);  
+}
+
+static u64 virtio_pci_get_features(struct virtio_device *vdev)
+{
+    struct virtio_pci_dev *vpci_dev = vdev->priv; 
+    u64 features; 
+
+    iowrite32(VIRTIO_FSEL_0_31, &vpci_dev->common_cfg->device_feature_select);
+    features = ioread32(&vpci_dev->common_cfg->device_feature); 
+    iowrite32(VIRTIO_FSEL_32_63, &vpci_dev->common_cfg->device_feature_select); 
+    features |= (u64)ioread32(&vpci_dev->common_cfg->device_feature_select) << 32; 
+    
+    return features; 
+}
+
+static int virtio_pci_finalize_features(struct virtio_device* vdev)
+{
+    struct virtio_pci_dev *vpci_dev = vdev->priv; 
+    u8 status; 
+
+    status = ioread8(&vpci_dev->common_cfg->device_status); 
+    iowrite8(status | VIRTIO_CONFIG_S_FEATURES_OK, &vpci_dev->common_cfg->device_status); 
+
+    status = ioread8(&vpci_dev->common_cfg->device_status);
+    if(!status & VIRTIO_CONFIG_S_FEATURES_OK)
+    {
+        dev_err(&vpci_dev->pdev->dev, "Failed to finalize features"); 
+        return -EINVAL; 
+    }
+
+    return 0; 
+}
+
 
 static int virtio_pci_map_common_cfg(struct virtio_pci_dev *vpci_dev, u8 pos)
 {
@@ -598,11 +717,24 @@ static int virtio_pci_enable_device(struct virtio_pci_dev *vpci_dev)
     return 0; 
 }
 
-static int virtio_pci_probe(struct pci_dev *pdev, const struct pci_device_id)
+static int virtio_pci_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 {
+    struct virtio_pci_dev *vpci_dev; 
+    struct virtio_net_dev *vnet_dev = NULL;
+    int ret; 
 
+    vpci_dev = kzalloc(sizeof(struct virtio_pci_dev), GFP_KERNEL); 
+    if(!vpci_dev)
+    {
+        dev_err(&pdev->dev, "Failed to allocate memory for virtio_pci_dev\n"); 
+        return -ENOMEM; 
+    }
+
+    /*link  virtio device as child of physical pci device*/ 
+    vpci_dev->virtio_dev.dev.parent = &pdev->dev;
+    vpci_dev->virtio_dev.id.device = id->device; 
+    vpci_dev->virtio_dev.id.vendor = PCI_VENDOR_ID_VIRTIO; 
+    vpci_dev->virtio_dev.config = &virtio_pci_config_ops 
 
 }
-
-
 

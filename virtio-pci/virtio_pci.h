@@ -7,6 +7,9 @@
 #include <linux/virtio.h> 
 #include "util.h"
 
+#define PCI_VENDOR_ID_VIRTIO            0x1AF4
+#define PCI_STD_NUM_BARS                6 
+
 /*Common configuration */ 
 #define VIRTIO_PCI_CAP_COMMON_CFG       1
 /*Notifications*/ 
@@ -61,7 +64,7 @@ struct virtio_pci_common_cfg
     __le16  config_msix_vector; 
     __le16  num_queues; 
     u8      device_status; 
-    u8      config_generation; 
+    u8      config_generation; /*config atomcity value, changes evety time configurations change */  
 
     /*specific virtqueue */  
     __le16  queue_select; 
