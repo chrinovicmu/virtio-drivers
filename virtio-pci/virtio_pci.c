@@ -1,6 +1,12 @@
 #include <linux/module.h>
+#include <linux/kernel.h> 
 #include <linux/pci.h>
 #include <linux/virtio_config.h>
+#include <linux/virtqueue.h>
+#include <linux/virtio_ring.h> 
+#include <linux/slab.h>
+#include <linux/errno.h> 
+
 #include "virtio/virtio_pci.h"
 
 /* Offsets for fields in struct virtio_pci_cap */
@@ -118,6 +124,15 @@ static u64 virtio_pci_get_features(struct virtio_device *vdev)
     return features; 
 }
 
+static void virtio_pci_set_features(struct virtio_device *vdev, u64 features)  /* Implements the set_features operation to write driver-accepted features. */
+{
+    struct virtio_pci_dev *vpci_dev = vdev->priv;
+    iowrite32(VIRTIO_FSEL_0_31, &vpci_dev->common_cfg->driver_feature_select); 
+    iowrite32(features & 0xFFFFFFFF, &vpci_dev->common_cfg->driver_feature);
+    iowrite32(VIRTIO_FSEL_32_63, &vpci_dev->common_cfg->driver_feature_select);  
+    iowrite32(features >> 32, &vpci_dev->common_cfg->driver_feature);
+}
+
 static int virtio_pci_finalize_features(struct virtio_device* vdev)
 {
     struct virtio_pci_dev *vpci_dev = vdev->priv; 
@@ -136,6 +151,97 @@ static int virtio_pci_finalize_features(struct virtio_device* vdev)
     return 0; 
 }
 
+static struct virtqueue *virtio_pci_setup_vq(struct virtio_device *vdev, unsigned int index,
+                                             void (*callback)(struct virtqueue *vq),
+                                             const char *name, bool ctx)
+{
+    struct virtio_pci_dev *vpci_dev = vdev->priv; 
+    struct virtio_pci_common_cfg &cfg = vpci_dev->common_cfg; 
+    u64 addr; 
+    u16 msix_vector = VIRTIO_MSI_NO_VECTOR; 
+
+    iowrite16(index, &cfg->queue_select); 
+    if(ioread16(&cfg->queue_size) == 0)
+    {
+        dev_err(&vpci_dev->pdev->dev, "Queue %u has size 0\n", index); 
+        return ERR_PTR(-EINVAL); 
+    }
+
+    vq = vring_create_virtqueue(index, ioread16(&cfg->queue_size), 16,
+                                vdev, true, ctx, callback, name); 
+
+    if(!vq)
+    {
+        dev_err(&vpci_dev->pdev->dev, "Failed to create virtqueue %u", index); 
+        return ERR_PTR(-ENOMEM); 
+    }
+
+    /*write physical addr of virtqueue sections to approate common configurations fields */ 
+    addr = virt_to_phys(vq->desc); 
+    iowrite64(addr, &cfg->queue_desc); 
+    addr = virt_to_phys(vq->avail); 
+    iowrite64(addr, &cfg->queue_driver);
+    addr = virt_to_phys(vq->used); 
+    iowrite64(addr, &cfg->queue_device); 
+
+    iowrite16(msix_vector, &cfg->queue_msix_vector);
+    ioread16(VIRTIO_VIRTQUEUE_ENABLE, &cfg->queue_enable); 
+    
+    /*read and write back notification offset for constistency*/ 
+    iowrite16(iowrite16(&cfg->queue_notify_off), &cfg->queue_notify_off); 
+
+    return vq; 
+}
+
+static void virtio_pci_del_vq(struct virtio_device *vdev, struct virtqueue *vq)
+{
+    struct virtio_pci_dev *vpci_dev = vdev->priv; 
+    iowrite16(vq->index, &vpci_dev->common_cfg->queue_select); 
+    iowrite16(VIRTIO_VIRTQUEUE_DISABLE, &vpci_dev->common_cfg->queue_enable); 
+    vring_del_virtqueue(vq); 
+}
+
+static void virtio_pci_del_vqs(struct virtio_device *vdev)
+{
+    struct virtqueue *vq, *n;
+    list_for_each_entry_safe(vq, n, &vdev->vqs, list){
+        virtio_pci_del_vq(vdev, vq); 
+    }
+}
+
+static void virtio_pci_find_vqs(struct virtio_device *vdev, unsigned nvqs, 
+                               struct virtqueue *vqs[], vq_callback_t *callbacks[], 
+                               const char *const names[], const bool *ctx, 
+                               struct irq_affinity *desc)
+{
+    struct virtio_pci_dev *vpci_dev = vdev->priv; 
+    unsigned x; 
+
+    for(x = 0; x < nvqs; x++)
+    {
+        vqs[x] = virtio_pci_setup_vq(vdev, i, callbacks[x], names[x], ctx ? ctx[x] : false); 
+        if(IS_ERR(vqs[x]))
+        {
+            int err = PTR_ERR(vqs[X]);
+            virtio_pci_del_vqs(vdev); 
+        }
+    }
+    return 0; 
+}
+
+static const struct virtio_config_ops virtio_pci_config_ops = {
+    .get = virtio_pci_get, 
+    .set = virtio_pci_set, 
+    .generation = virtio_pci_generation, 
+    .get_status = virtio_pci_get_status, 
+    .set_status = virtio_pci_set_status, 
+    .reset = virtio_pci_reset, 
+    .get_features = virtio_pci_get_features, 
+    .set_features = virtio_pci_set_features, 
+    .finalize_features = virtio_pci_finalize_features, 
+    .find_vqs = virtio_pci_find_vqs, 
+    .del_vqs = virtio_pci_del_vqs, 
+}; 
 
 static int virtio_pci_map_common_cfg(struct virtio_pci_dev *vpci_dev, u8 pos)
 {
@@ -734,7 +840,6 @@ static int virtio_pci_probe(struct pci_dev *pdev, const struct pci_device_id *id
     vpci_dev->virtio_dev.dev.parent = &pdev->dev;
     vpci_dev->virtio_dev.id.device = id->device; 
     vpci_dev->virtio_dev.id.vendor = PCI_VENDOR_ID_VIRTIO; 
-    vpci_dev->virtio_dev.config = &virtio_pci_config_ops 
-
+    vpci_dev->virtio_dev.config = &virtio_pci_config_ops; 
 }
 

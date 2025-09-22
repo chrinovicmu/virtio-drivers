@@ -75,6 +75,7 @@ struct virtq_used
 
 struct virtqueue
 {
+    unsigned int index; 
     __le16 desc_num;   /*number of descriptors */ 
     struct virtq_desc *desc; 
     struct virtq_avail *avail; 
