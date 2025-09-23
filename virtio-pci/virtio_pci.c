@@ -840,6 +840,183 @@ static int virtio_pci_probe(struct pci_dev *pdev, const struct pci_device_id *id
     vpci_dev->virtio_dev.dev.parent = &pdev->dev;
     vpci_dev->virtio_dev.id.device = id->device; 
     vpci_dev->virtio_dev.id.vendor = PCI_VENDOR_ID_VIRTIO; 
-    vpci_dev->virtio_dev.config = &virtio_pci_config_ops; 
+    vpci_dev->virtio_dev.config = &virtio_pci_config_ops;
+    vpci_dev->virtio_dev.priv = vpci_dev; 
+
+    ret = pci_enable_device(pdev); 
+    if(ret)
+    {
+        dev_err(&pdev->dev, "Failed to enable PCI device\n"); 
+        goto err_free_dev; 
+    }
+
+    ret = pci_request_regions(pdev, "virtio-pci"); 
+    if(ret)
+    {
+        dev_err(&pdev->dev, "Failed to requeat PCI regions\n"); 
+        goto err_disable_dev; 
+    }
+
+    /*set address type for dma */ 
+    ret = pci_set_dma_mask(pdev, DMA_BIT_MASK(64)); 
+    if(ret)
+    {
+        ret = pci_set_dma_mask(pdev. DMA_BIT_MASK(32)); 
+        if(ret)
+        {
+            dev_err(pdev->dev, "Failed to set DMA mask\n"); 
+            goto err_release_regions; 
+        }
+    }
+
+    /*dma mask for buffers that remain mapped */ 
+    pci_set_consistent_dma_mask(pdev, DMA_BIT_MASK(64)); 
+    
+    /*map VIRTIO capablilties */ 
+    ret = virtio_pci_find_caps(vpci_dev); 
+    if(ret)
+    {
+        dev_err(&pdev->dev, "Failed to map Virtio capablilties\n"); 
+        goto err_release_regions; 
+    }
+
+    /*set up interrputs for VIRTIO device */ 
+    ret = virtio_pci_setup_interrupts(vpci_dev);
+    if(ret)
+    {
+        dev_err(&pdev->dev, "Failed to set up interrputs on VIRTIO device\n"); 
+        goto err_cleanup_caps; 
+    }
+
+    /*set up 3 virtqueues (RX, TX, CTRL) */
+    ret = virtio_pci_find_vqs(&vpci_dev->virtio_dev, 3, vpci_dev->vqs, 
+                              (vq_callback_t *[]){virtio_net_receive_packet, NULL, NULL}, 
+                              (const char*[]){"rx", "tx", "ctrl"}, NULL, NULL);
+
+    if(ret)
+    {
+        dev_err(&pdev->dev, "Failed to set up virtqueues\n"); 
+        goto err_cleanup_interrupts; 
+    }
+
+    /*enable virtio device by setting status bits */ 
+    ret = virtio_pci_enable_device(vpci_dev);
+    if(ret)
+    {
+        dev_err(&pdev->dev, "Failed to enable VIRTIO device"); 
+        goto err_cleanup_vq;  
+    }
+
+    /*check if device is virtio-net device (ID 0x100)*/ 
+    if(id->device = PCI_DEVICE_ID_VIRTIO_NET)
+    {
+        ret = virtio_net_init(vpci_dev); 
+        if(ret)
+        {
+            dev_err(&pdev->dev, "Failed to register VirtIO device\n"); 
+            goto err_cleaup_device; 
+        }
+        vnet_dev = vpci_dev->virtio_dev.priv; 
+    }
+
+    ret = register_virtio_device(&vpci_dev->virtio_dev); 
+    if(ret)
+    {
+        dev_err(&pdev->dev, "Failed to register VIRTIO device\n"); 
+        goto err_cleaup_net; 
+    }
+
+    /*store vpci_dev as driver data for PCI device */ 
+    pci_set_drvdata(pdev, vpci_dev);
+    
+    dev_info(&pdev->dev, "VIRTIO PCI device probed, ID 0x%04x\n", id->device); 
+
+    return 0; 
+
+err_cleanup_net:
+    if (vnet_dev)
+        virtio_net_exit(vnet_dev);
+
+err_cleanup_device:
+    iowrite8(0, &vpci_dev->common_cfg->device_status);
+
+err_cleanup_vqs:
+    virtio_pci_del_vqs(&vpci_dev->virtio_dev);
+
+err_cleanup_interrupts:
+    virtio_pci_cleanup_interrupts(vpci_dev);
+
+err_cleanup_caps:
+    if (vpci_dev->device_cfg)
+        iounmap(vpci_dev->device_cfg);
+    if (vpci_dev->isr_data)
+        iounmap(vpci_dev->isr_data);
+    if (vpci_dev->notify_cap) {
+        iounmap((void __iomem *)(unsigned long)vpci_dev->notify_cap->cap.offset);
+        kfree(vpci_dev->notify_cap);
+    }
+    if (vpci_dev->common_cfg)
+        iounmap(vpci_dev->common_cfg);
+
+err_release_regions:
+    pci_release_regions(pdev);
+
+err_disable_dev:
+    pci_disable_device(pdev);
+
+err_free_dev:
+    kfree(vpci_dev);
+    return ret;
 }
+
+static void virtio_pci_remove(struct pci_dev *pdev)
+{
+    struct virtio_pci_dev *vpci_dev = pci_get_drvdata(pdev); 
+    struct virtio_net_dev *vnet_dev = vpci_dev->virtio_dev.priv;
+
+    unregister_virtio_device(&vpci_dev->virtio_dev); 
+
+    if(vpci_dev->virtio_dev.id.device == PCI_DEVICE_ID_VIRTIO_NET && vnet_dev)
+        virtio_net_exit(vnet_dev); 
+
+    /*reset the device */ 
+    iowrite8(VIRTIO_CONFIG_S_RESET, &vpci_dev->common_cfg-<device_status);
+
+    virtio_pci_del_vqs(&vpci_dev->virtio_dev); 
+    virtio_pci_cleanup_interrupts(vpci_dev);
+
+    if(vpci_dev->device_cfg)
+        iounmap(vpci_dev->device_cfg); 
+
+    if(vpci_dev->isr_data)
+        iounmap(vpci_dev->isr_data); 
+
+    if(vpci_dev->notify_cap)
+    {
+        /*unmap notifcation region */ 
+        iounmap((void __iomem *)(unsigned long)vpci_dev->notify_cap.cap.offset); 
+        kfree(vpci_dev->notify_cap); 
+    }
+
+    if(vpci_dev->common_cfg)
+        iounmap(vpci_dev->common_cfg); 
+
+    pci_release_regions(pdev); 
+    pci_disable_device(pdev); 
+    kfree(vpci_dev); 
+}
+
+static struct pci_driver virtio_cpi_driver = {
+    .name = "virtio-pci", 
+    id_table = virtio_pci_id_table, 
+    .probe  = virtio_pci_probe, 
+    .remove = virtio_pci_remove, 
+};
+
+module_pci_driver(virtio_pci_driver);
+MODULE_LICENSE("GPL"); 
+MODULE_DESCRIPTION("VirtIO PCI driver for VirtIO 1.2 devices");
+MODULE_AUTHOR("Chrinoic M"); 
+
+
 

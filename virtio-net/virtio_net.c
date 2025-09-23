@@ -24,7 +24,7 @@ static int virtio_net_open(struct net_device *dev)
     iowrite16(VIRTIO_VIRTQUEUE_ENABLE, &vpci_dev->common_cfg->queue_enable); 
 
     /*enable CTRL queue (if it exists)*/ 
-    if(vpci_dev->virtqs[VIRTIO_NET_QUEUE_CTRL])
+    if(vpci_dev->vqs[VIRTIO_NET_QUEUE_CTRL])
     {
         iowrite16(VIRTIO_NET_QUEUE_CTRL, &vpci_dev->common_cfg->queue_select); 
         iowrite16(VIRTIO_VIRTQUEUE_ENABLE, &vpci_dev->common_cfg->queue_enable); 
@@ -67,7 +67,7 @@ static netdev_tx_t virtio_net_xmit(struct sk_buff *skb, struct net_device *dev)
 
     struct virtio_net_dev *vnet_dev = netdev_priv(dev); 
     struct virtio_pci_dev *vpci_dev = vnet_dev->vpci_dev; 
-    struct virtqueue *vq = vpci_dev->virtqs[VIRTIO_NET_QUEUE_TX]; /*transimit virtqueue */ 
+    struct virtqueue *vq = vpci_dev->vqs[VIRTIO_NET_QUEUE_TX]; /*transimit virtqueue */ 
     struct scatterlist sg[sg_entries_len];  
     int ret; 
 
@@ -117,7 +117,7 @@ static const struct net_device_ops virtio_netdev_ops = {
 static void virtio_net_recieve(struct virtio_net_dev *vnet_dev)
 {
     struct virtio_pci_dev *vpci_dev = vnet_dev->vpci_dev; 
-    struct virtqueue *vq = vpci_dev->virtqs[VIRTIO_NET_QUEUE_RX]; 
+    struct virtqueue *vq = vpci_dev->vqs[VIRTIO_NET_QUEUE_RX]; 
     struct sk_buff *skb; 
     void *buf; 
     unsigned len; 
@@ -235,7 +235,7 @@ err_unregister_netdev:
 void virtio_net_exit(struct virtio_net_dev *vnet_dev)
 {
     struct virtio_pci_dev *vpci_dev = vnet_dev->vpci_dev; 
-    struct virtqueue *rx_vq = vpci_dev->virtqs[VIRTIO_NET_QUEUE_RX]; 
+    struct virtqueue *rx_vq = vpci_dev->vqs[VIRTIO_NET_QUEUE_RX]; 
     void *buf; 
 
     /*stop network device */ 

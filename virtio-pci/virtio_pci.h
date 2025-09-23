@@ -126,7 +126,7 @@ struct virtio_pci_dev
     struct virtio_pci_cap cap; 
     void __iomem *isr_data;
     void __iomem *device_cfg; 
-    struct virtqueue *virtqs;  
+    struct virtqueue *vqs;  
     int num_queues; 
 }
 
