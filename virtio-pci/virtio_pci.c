@@ -1006,7 +1006,7 @@ static void virtio_pci_remove(struct pci_dev *pdev)
     kfree(vpci_dev); 
 }
 
-static struct pci_driver virtio_cpi_driver = {
+static struct pci_driver virtio_pci_driver = {
     .name = "virtio-pci", 
     id_table = virtio_pci_id_table, 
     .probe  = virtio_pci_probe, 
