@@ -1,137 +1,60 @@
-#ifndef VIRTIO_PCI_H 
+
+#ifndef VIRTIO_PCI_H
 #define VIRTIO_PCI_H
 
-#include <linux/types.h> 
-#include <linux/byteorder/generic.h>  
-#include <linux/virtio_pci.h> 
-#include <linux/virtio.h> 
-#include "util.h"
+#include <linux/virtio_pci.h>
+#include <linux/virtio_config.h>
+#include <linux/virtio.h>
+#include <linux/pci.h> 
+#include <linux/virtio_pci.h>
 
-#define PCI_VENDOR_ID_VIRTIO            0x1AF4
-#define PCI_STD_NUM_BARS                6 
+/* Offsets for fields in struct virtio_pci_cap */
+#define VIRTIO_PCI_CAP_VNDR_OFFSET      0  /* cap_vndr, cap_next, cap_len, cfg_type */
+#define VIRTIO_PCI_CAP_BAR_OFFSET       4  /* bar, id, padding[2] */
+#define VIRTIO_PCI_CAP_OFFSET_OFFSET    8  /* offset */
+#define VIRTIO_PCI_CAP_LENGTH_OFFSET   12  /* length */
 
-/*Common configuration */ 
-#define VIRTIO_PCI_CAP_COMMON_CFG       1
-/*Notifications*/ 
-#define VIRTIO_PCI_CAP_NOTIFY_CFG       2  
-/*ISR status */
-#define VIRTIO_PCI_CAP_ISR_CFG          3 
-/*Device specific configuration*/   
-#define VIRTIO_PCI_CAP_DEVICE_CFG       4
-/*PCI configuration acceess */ 
-#define VIRTIO_PCI_CAP_PCI_CFG          5 
-/*shared memory region */ 
-#define VIRTIO_PCI_CAP_SHARED_MEMORY_CFG 8
-/*Vendor-specific data */ 
-#define VIRTIO_PCI_CAP_VENDOR_CFG       9 
+#define VIRTIO_PCI_MIN_VECTORS          1 
+#define VIRTIO_PCI_MAX_VECTORS          1 
 
-/* ISR status bit definations */ 
+/* Feature selector values */
+#define VIRTIO_FSEL_0_31                0x0   /* Select feature bits 0..31 */
+#define VIRTIO_FSEL_32_63               0x1   /* Select feature bits 32..63 */
+#define VIRTIO_FSEL_64_95               0x2   /* Select feature bits 64..95 (if device supports) */
+#define VIRTIO_FSEL_96_127              0x3   /* Select feature bits 96..127 */
 
-/*one or ore virtqueues have pending events, such as new buffers beign available for processing 
- * e.g device added buffers to used ring or driver added buffers to available ring */ 
-#define ISR_STATUS_QUEUE_INTERRUPT      0x1
+#define VIRTIO_NET_QUEUE_RX             0
+#define VIRTIO_NET_QUEUE_TX             1
+#define VIRTIO_NET_QUEUE_CTRL           2
 
-/* device configuration has changed, such as modifications to device_status or config_generation*/  
-#define ISR_STATUS_DEVICE_CFG_INTERRUPT 0x2  
+#define VIRTIO_VIRTQUEUE_ENABLE         1 
+#define VIRTIO_VIRTQUEUE_DISABLE        0 
 
-struct virtio_pci_cap
-{
-    u8      cap_vndr; /*Generic PCI field : vendor specific capability */ 
-    u8      cap_next; /*Generic PCI field : link to next capability in capability list in pci config space */ 
-    u8      cap_len; /*Generic PCI field length of while pci_cap struct*/ 
-    u8      cfg_type; /* identify config structure */ 
-    u8      bar; /*where to find it */ 
-    u8      id; /*mulitple capabilities of the same type */ 
-    u8      padding[2]; /*pad full dword */ 
-    __le32  offset; /*offset within bar */ 
-    __le32  length; /*length of the structure */ 
-}__attribute__((packed)); 
+/* Driver-specific structure */
+struct virtio_pci_dev {
+    struct virtio_device virtio_dev;
+    struct pci_dev *pdev;
+    u64 device_features;    /* device-offered features */
+    u64 guest_features;     /* driver-accepted features */
 
-struct virtio_pci_cap64
-{
-    struct virtio_pci_cap cap; 
-    u32     offset_hi;
-    u32     length_hi; 
+    struct virtio_pci_common_cfg __iomem *common_cfg;
+    void __iomem *common_cfg_base; 
+
+    struct virtio_pci_notify_cap *notify_cap;
+    void __iomem *notify_cap_base; 
+
+    void __iomem *isr_data; 
+    void __iomem *isr_bar_base; 
+
+    void __iomem *device_cfg; 
+    void __iomem *device_cfg_base 
+
+    struct virtqueue **vqs; 
+    int num_queues;
 };
 
-struct virtio_pci_common_cfg 
-{
-    /*device*/
-    __le32  device_feature_select; 
-    __le32  device_feature; 
-    __le32  driver_feature_select; 
-    __le32  driver_feature; 
-    __le16  config_msix_vector; 
-    __le16  num_queues; 
-    u8      device_status; 
-    u8      config_generation; /*config atomcity value, changes evety time configurations change */  
+/* Driver functions */
+int virtio_pci_init(struct virtio_pci_dev *vpci_dev);
+void virtio_pci_exit(struct virtio_pci_dev *vpci_dev);
 
-    /*specific virtqueue */  
-    __le16  queue_select; 
-    __le16  queue_size; 
-    __le16  queue_msix_vector;
-    __le16  queue_enable; 
-    __le16  queue_notify_off; /* Notifications slot offset idx */ 
-    __le64  queue_desc; 
-    __le64  queue_driver;    /*addr driver area of avail ring */  
-    __le64  queue_device;    /*addr device area of used ring */ 
-    __le16  queue_notify_data; 
-    __le16  queue_reset; 
-} __attribute__((packed, aligned(4)));
-
-
-struct virtio_pci_notify_cap 
-{
-    struct virtio_pci_cap cap; 
-
-    /*multiplier used for each queue notifu register */ 
-    __le32 notify_off_multiplier; 
-}__attribute__((packed)); 
-
-struct virtio_pci_isr_data 
-{
-    union {
-        u32 isr_status; 
-        struct {
-            u8 queue_intr : 1;
-            u8 config_intr : 1; 
-            u8 reserved : 6;
-            u device_specific[3]; 
-        } __attribute__((packed)); 
-    }; 
-}; 
-
-struct virtio_pci_cndr_data 
-{
-    u8 cap_vndr; 
-    u8 cap_next; 
-    u8 cap_len; 
-    u8 cfg_type; 
-    u16 vendor_id; 
-}; 
-
-struct virtio_pci_cfg_cap 
-{
-    struct virtio_pci_cap cap; 
-    u8 pci_cfg_data[4]; 
-}
-struct virtio_pci_dev 
-{
-    struct virtio_device virtio_dev; 
-    struct pci_dev *pdev;
-    u64 device_features;    /*device-offered features */  
-    u64 guest_features;     /*driver-accepted features */ 
-    struct virtio_pci_common_cfg __iomem *common_cfg; 
-    struct virtio_pci_notify_cap *notify_cap; 
-    struct virtio_pci_cap cap; 
-    void __iomem *isr_data;
-    void __iomem *device_cfg; 
-    struct virtqueue *vqs;  
-    int num_queues; 
-}
-
-static int virtio_pci_init(struct virtio_pci_dev *vpci_dev)
-{
-
-}
-#endif // !VIRTIO_PCI_H 
+#endif // VIRTIO_PCI_H
