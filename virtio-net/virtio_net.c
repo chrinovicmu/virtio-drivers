@@ -7,7 +7,7 @@
 #include <linux/scatterlist.h>
 #include "virtio_net.h"
 
-static int virtio_net_open(struct net_device *dev)
+int virtio_net_open(struct net_device *dev)
 {
     /*get private data attahced to net_device */
     struct virtio_net_dev *vnet_dev = netdev_priv(dev);
@@ -32,7 +32,7 @@ static int virtio_net_open(struct net_device *dev)
     return 0;
 }
 
-static int virtio_net_stop(struct net_device *dev)
+int virtio_net_stop(struct net_device *dev)
 {
     /*get private data attahced to net_device */
     struct virtio_net_dev *vnet_dev = netdev_priv(dev);
@@ -57,7 +57,7 @@ static int virtio_net_stop(struct net_device *dev)
     return 0;
 }
 
-static netdev_tx_t virtio_net_xmit(struct sk_buff *skb, struct net_device *dev)
+netdev_tx_t virtio_net_xmit(struct sk_buff *skb, struct net_device *dev)
 {
     int sg_entries_len = 1;
     struct virtio_net_dev *vnet_dev = netdev_priv(dev);
@@ -105,7 +105,7 @@ static const struct net_device_ops virtio_netdev_ops = {
 };
 
 /*recieve packet */
-static void virtio_net_recieve(struct virtio_net_dev *vnet_dev) 
+void virtio_net_receive(struct virtio_net_dev *vnet_dev) 
 {
     struct virtio_pci_dev *vpci_dev = vnet_dev->vpci_dev;
     struct virtqueue *vq = vpci_dev->vqs[VIRTIO_NET_QUEUE_RX];

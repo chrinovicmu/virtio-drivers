@@ -5,13 +5,15 @@
 #include <linux/virtio_ring.h>
 #include <linux/slab.h>
 #include <linux/errno.h> 
-#include <linux/virtio_pci.h> 
+#include <linux/virtio_pci.h>
+#include <linux/virtio.h> 
+#include <linux/virtio_ids.h> 
 #include "virtio_net.h"
 #include "virtio_pci.h"
 
 
 static const struct pci_device_id virtio_pci_id_table[] = {
-    {PCI_DEVICE(PCI_VENDOR_ID_VIRTIO, PCI_DEVICE_ID_VIRTIO_NET), 
+    {PCI_DEVICE(PCI_VENDOR_ID_VIRTIO, PCI_DEVICE_ID_VIRTIO_NET)}, 
     {0}
 };
 MODULE_DEVICE_TABLE(pci, virtio_pci_id_table); 
@@ -101,14 +103,11 @@ static u64 virtio_pci_get_features(struct virtio_device *vdev)
     struct virtio_pci_dev *vpci_dev = vdev->priv; 
     u64 features; 
 
-    /* 
     iowrite32(VIRTIO_FSEL_0_31, &vpci_dev->common_cfg->device_feature_select);
     features = ioread32(&vpci_dev->common_cfg->device_feature); 
     iowrite32(VIRTIO_FSEL_32_63, &vpci_dev->common_cfg->device_feature_select); 
     features |= (u64)ioread32(&vpci_dev->common_cfg->device_feature) << 32; 
-    */ 
 
-    features = virtio_get_features(&vpci_dev->virtio_dev); 
     return features; 
 }
 
@@ -116,14 +115,12 @@ static void virtio_pci_set_features(struct virtio_device *vdev, u64 features)  /
 {
     struct virtio_pci_dev *vpci_dev = vdev->priv;
 
-    /*
-    iowrite32(VIRTIO_FSEL_0_31, &vpci_dev->common_cfg->driver_feature_select); 
-    iowrite32(features & 0xFFFFFFFF, &vpci_dev->common_cfg->driver_feature);
-    iowrite32(VIRTIO_FSEL_32_63, &vpci_dev->common_cfg->driver_feature_select);  
-    iowrite32(features >> 32, &vpci_dev->common_cfg->driver_feature);
-    */
+    iowrite32(VIRTIO_FSEL_0_31, &vpci_dev->common_cfg->device_feature_select); 
+    iowrite32(features & 0xFFFFFFFF, &vpci_dev->common_cfg->device_feature);
 
-    virtio_set_features(&vpci_dev->virtio_dev, features); 
+    iowrite32(VIRTIO_FSEL_32_63, &vpci_dev->common_cfg->device_feature_select);  
+    iowrite32(features >> 32, &vpci_dev->common_cfg->device_feature);
+
 }
 
 static int virtio_pci_finalize_features(struct virtio_device* vdev)
@@ -187,35 +184,53 @@ static struct virtqueue *virtio_pci_setup_vq(struct virtio_device *vdev, unsigne
 
     return vq; 
 }
-*/ 
-static struct virtqueue *virtio_pci_setup_vq(struct virtio_device *vdev, unsigned int index,
-                                             vring_callback_t *callback)
+*/
+
+
+
+static bool virtio_pci_notify(struct virtqueue *vq)
+{
+    return true;
+}
+
+static struct virtqueue *virtio_pci_setup_vq(struct virtio_device *vdev,
+                                             unsigned int index,
+                                             vq_callback_t *callback)
 {
     struct virtio_pci_dev *vpci_dev = vdev->priv;
     struct virtqueue *vq;
     u16 qsize;
-
-    /* select queue */ 
+    
     iowrite16(index, &vpci_dev->common_cfg->queue_select);
+    
     qsize = ioread16(&vpci_dev->common_cfg->queue_size);
+    
     if (qsize == 0) {
         dev_err(&vpci_dev->pdev->dev, "Queue %u has size 0\n", index);
-        return ERR_PTR(-EINVAL);
+        return ERR_PTR(-EINVAL);  // Return error pointer for invalid argument
     }
-
-    /* Create the virtqueue using the modern kernel API */ 
-    vq = vring_create_virtqueue(index, qsize, 16, vdev, true, callback);
+    
+    vq = vring_create_virtqueue(
+        index,                    // unsigned int index - Queue index identifier
+        qsize,                    // unsigned int num - Queue size (number of entries)
+        16,                       // unsigned int vring_align - Alignment requirement (16 bytes)
+        vdev,                     // struct virtio_device *vdev - VirtIO device pointer
+        true,                     // bool weak_barriers - Use weaker memory barriers for performance
+        false,                    // bool may_reduce_num - Allow queue size reduction
+        NULL,                     // void *context - Optional context pointer (usually NULL)
+        virtio_pci_notify,        // bool (*notify)(struct virtqueue *) - Notification function
+        callback,                 // void (*callback)(struct virtqueue *) - RX callback function
+        "virtio-pci-vq");         // const char *name - Queue name for debugging
+    
     if (!vq) {
         dev_err(&vpci_dev->pdev->dev, "Failed to create virtqueue %u\n", index);
-        return ERR_PTR(-ENOMEM);
+        return ERR_PTR(-ENOMEM);  // Return error pointer for out of memory
     }
-
-    /* Enable the queue in the common config (queue_enable)*/ 
+    
     iowrite16(VIRTIO_VIRTQUEUE_ENABLE, &vpci_dev->common_cfg->queue_enable);
-
+    
     return vq;
 }
-
 
 /*
 static void virtio_pci_del_vq(struct virtio_device *vdev, struct virtqueue *vq)
@@ -282,9 +297,9 @@ static const struct virtio_config_ops virtio_pci_config_ops = {
     .set_status = virtio_pci_set_status, 
     .reset = virtio_pci_reset, 
     .get_features = virtio_pci_get_features, 
-    .set_features = virtio_pci_set_features, 
+//    .set_features = virtio_pci_set_features, 
     .finalize_features = virtio_pci_finalize_features, 
-    .find_vqs = virtio_pci_find_vqs, 
+  //  .find_vqs = virtio_pci_find_vqs, 
     .del_vqs = virtio_pci_del_vqs, 
 }; 
 
@@ -354,14 +369,14 @@ static int virtio_pci_map_common_cfg(struct virtio_pci_dev *vpci_dev, u8 pos)
     
     /*points directly to the common_cfg structure */ 
     vpci_dev->common_cfg = bar_base + cap.offset;
-    vpci_dev-->common_cfg_base = bar_base; 
+    vpci_dev->common_cfg_base = bar_base; 
 
     /*check if memory is mapped */ 
     if(ioread8(&vpci_dev->common_cfg->device_status) == 0xFF)
     {
         dev_err(&pdev->dev, "Common cfg region at BAR %d Offset 0x%x is invaild\n",
                 cap.bar, cap.offset); 
-        iounmap(base); 
+        iounmap(bar_base); 
         vpci_dev->common_cfg = NULL; 
         vpci_dev->common_cfg_base = NULL; 
         return -EIO; 
@@ -435,7 +450,8 @@ static int virtio_pci_map_notify_cfg(struct virtio_pci_dev *vpci_dev, u8 pos)
     }
 
     /*validate the length(must be sufficent for queue notifications 
-     * each queue notifcation register is u16*/)
+     * each queue notifcation register is u16*/
+
     if(notify_cap.cap.length < sizeof(u16))
     {
         dev_err(&pdev->dev, "Notify cfg capability length %d too small\n",
@@ -541,7 +557,7 @@ static int virtio_pci_map_isr_cfg(struct virtio_pci_dev *vpci_dev, u8 pos)
     }
 
     /* validate the length (must be sufficient for struct virtio_pci_isr_data) */ 
-    if (cap.length < sizeof(struct virtio_pci_isr_data)) {
+    if (cap.length < 4 {
         dev_err(&pdev->dev, "ISR cfg capability length %d too small\n", cap.length);
         return -EINVAL;
     }
@@ -554,7 +570,7 @@ static int virtio_pci_map_isr_cfg(struct virtio_pci_dev *vpci_dev, u8 pos)
 
     vpci_dev->isr_bar_base = bar_base; 
 
-    vpci_dev->isr_data = base + cap.offset;
+    vpci_dev->isr_data = bar_base + cap.offset;
 
     if (ioread32(vpci_dev->isr_data) == 0xFFFFFFFF) {
         dev_err(&pdev->dev, "ISR cfg region at BAR %d offset 0x%x is invalid\n",
@@ -585,7 +601,7 @@ static irqreturn_t virtio_pci_interrupt(int irq, void *data)
         if(vpci_dev->virtio_dev.id.device == PCI_DEVICE_ID_VIRTIO_NET)
         {
             struct virtio_net_dev *vnet_dev = vpci_dev->virtio_dev.priv; 
-            virtio_net_receive_packet(vnet_dev, NULL, NULL);  
+            virtio_net_receive(vnet_dev);  
         }
     }
 

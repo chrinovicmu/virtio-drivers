@@ -7,6 +7,7 @@
 #include <linux/virtio.h>
 #include <linux/pci.h> 
 #include <linux/virtio_pci.h>
+#include <linux/spinlock.h> 
 
 /* Offsets for fields in struct virtio_pci_cap */
 #define VIRTIO_PCI_CAP_VNDR_OFFSET      0  /* cap_vndr, cap_next, cap_len, cfg_type */
@@ -28,7 +29,16 @@
 #define VIRTIO_NET_QUEUE_CTRL           2
 
 #define VIRTIO_VIRTQUEUE_ENABLE         1 
-#define VIRTIO_VIRTQUEUE_DISABLE        0 
+#define VIRTIO_VIRTQUEUE_DISABLE        0
+
+#ifndef PCI_VENDOR_ID_VIRTIO
+#define PCI_VENDOR_ID_VIRTIO 0x1AF4
+#endif
+
+#ifndef PCI_DEVICE_ID_VIRTIO_NET
+#define PCI_DEVICE_ID_VIRTIO_NET 0x1000
+#endif
+
 
 /* Driver-specific structure */
 struct virtio_pci_dev {
@@ -47,10 +57,12 @@ struct virtio_pci_dev {
     void __iomem *isr_bar_base; 
 
     void __iomem *device_cfg; 
-    void __iomem *device_cfg_base 
+    void __iomem *device_cfg_base; 
 
     struct virtqueue **vqs; 
     int num_queues;
+
+    spinlock_t vq_lock; 
 };
 
 /* Driver functions */
