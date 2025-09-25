@@ -21,5 +21,5 @@ void virtio_net_exit(struct virtio_net_dev *vnet_dev);
 int virtio_net_open(struct net_device *dev);
 int virtio_net_stop(struct net_device *dev);
 netdev_tx_t virtio_net_xmit(struct sk_buff *skb, struct net_device *dev);
-void virtio_net_receive(struct virtio_net_dev *vnet_dev);
+void virtio_net_receive(struct virtqueue *vq);
 #endif /* VIRTIO_NET_DRIVER_H */

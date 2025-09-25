@@ -12,6 +12,31 @@
 #include "virtio_net.h"
 #include "virtio_pci.h"
 
+static void virtio_pci_get(struct virtio_device *vdev, unsigned offset, void *buf, unsigned int len);
+static void virtio_pci_set(struct virtio_device *vdev, unsigned offset, const void *buf, unsigned len);
+static u32 virtio_pci_generation(struct virtio_device *vdev);
+static u8 virtio_pci_get_status(struct virtio_device *vdev);
+static void virtio_pci_set_status(struct virtio_device *vdev, u8 status);
+static void virtio_pci_reset(struct virtio_device *vdev);
+static u64 virtio_pci_get_features(struct virtio_device *vdev);
+static void virtio_pci_set_features(struct virtio_device *vdev, u64 features);
+static int virtio_pci_finalize_features(struct virtio_device *vdev);
+static struct virtqueue *virtio_pci_setup_vq(struct virtio_device *vdev, unsigned int index, vq_callback_t *callback);
+static void virtio_pci_del_vq(struct virtqueue *vq);
+static void virtio_pci_del_vqs(struct virtio_device *vdev);
+static int virtio_pci_find_vqs(struct virtio_device *vdev, unsigned nvqs, struct virtqueue *vqs[], vq_callback_t *callbacks[], const char *const names[], const bool *ctx, struct irq_affinity *desc);
+static bool virtio_pci_notify(struct virtqueue *vq);
+static int virtio_pci_map_common_cfg(struct virtio_pci_dev *vpci_dev, u8 pos);
+static int virtio_pci_map_notify_cfg(struct virtio_pci_dev *vpci_dev, u8 pos);
+static int virtio_pci_map_isr_cfg(struct virtio_pci_dev *vpci_dev, u8 pos);
+static int virtio_pci_map_device_cfg(struct virtio_pci_dev *vpci_dev, u8 pos);
+static irqreturn_t virtio_pci_interrupt(int irq, void *data);
+static int virtio_pci_find_caps(struct virtio_pci_dev *vpci_dev);
+static int virtio_pci_setup_interrupts(struct virtio_pci_dev *vpci_dev);
+static void virtio_pci_cleanup_interrupts(struct virtio_pci_dev *vpci_dev);
+static int virtio_pci_enable_device(struct virtio_pci_dev *vpci_dev);
+static int virtio_pci_probe(struct pci_dev *pdev, const struct pci_device_id *id);
+static void virtio_pci_remove(struct pci_dev *pdev);
 
 static const struct pci_device_id virtio_pci_id_table[] = {
     {PCI_DEVICE(PCI_VENDOR_ID_VIRTIO, PCI_DEVICE_ID_VIRTIO_NET)}, 
@@ -249,7 +274,7 @@ static void virtio_pci_del_vqs(struct virtio_device *vdev)
         virtio_pci_del_vq(vdev, vq); 
     }
 }
-
+*/ 
 static int virtio_pci_find_vqs(struct virtio_device *vdev, unsigned nvqs, 
                                struct virtqueue *vqs[], vq_callback_t *callbacks[], 
                                const char *const names[], const bool *ctx, 
@@ -260,7 +285,7 @@ static int virtio_pci_find_vqs(struct virtio_device *vdev, unsigned nvqs,
 
     for(x = 0; x < nvqs; x++)
     {
-        vqs[x] = virtio_pci_setup_vq(vdev, x, callbacks[x], names[x], ctx ? ctx[x] : false); 
+        vqs[x] = virtio_pci_setup_vq(vdev, x, callbacks[x]); 
         if(IS_ERR(vqs[x]))
         {
             int err = PTR_ERR(vqs[x]);
@@ -271,7 +296,7 @@ static int virtio_pci_find_vqs(struct virtio_device *vdev, unsigned nvqs,
     return 0; 
 }
 
-*/ 
+ 
 static void virtio_pci_del_vq(struct virtqueue *vq)
 {
     if (!vq)
@@ -613,12 +638,15 @@ static irqreturn_t virtio_pci_interrupt(int irq, void *data)
     {
         dev_dbg(&vpci_dev->pdev->dev, "Queue interrput triggered\n"); 
 
-        /*if device is a network card */ 
+        /*if device is a network card *i/ 
+
+        /*
         if(vpci_dev->virtio_dev.id.device == PCI_DEVICE_ID_VIRTIO_NET)
         {
             struct virtio_net_dev *vnet_dev = vpci_dev->virtio_dev.priv; 
-            virtio_net_receive(vnet_dev);  
+            virtio_net_receive(vpci_dev);  
         }
+        */ 
     }
 
     /*configuration interrput */ 
@@ -959,20 +987,34 @@ static int virtio_pci_probe(struct pci_dev *pdev, const struct pci_device_id *id
         goto err_disable_dev; 
     }
 
-    /*set address type for dma */ 
-    ret = pci_set_dma_mask(pdev, DMA_BIT_MASK(64)); 
-    if(ret)
+
+    
+/* Set DMA mask: try 64-bit first, fallback to 32-bit */
+#ifdef pci_set_dma_mask
+    ret = pci_set_dma_mask(pdev, DMA_BIT_MASK(64));
+    if (ret) 
     {
-        ret = pci_set_dma_mask(pdev, DMA_BIT_MASK(32)); 
-        if(ret)
+        ret = pci_set_dma_mask(pdev, DMA_BIT_MASK(32));
+        if (ret) 
         {
-            dev_err(&pdev->dev, "Failed to set DMA mask\n"); 
-            goto err_release_regions; 
+            dev_err(&pdev->dev, "Failed to set DMA mask\n");
+            goto err_release_regions;
         }
     }
 
-    /*dma mask for buffers that remain mapped */ 
-    pci_set_consistent_dma_mask(pdev, DMA_BIT_MASK(64)); 
+/* Set consistent DMA mask */
+#ifdef pci_set_consistent_dma_mask
+    ret = pci_set_consistent_dma_mask(pdev, DMA_BIT_MASK(64));
+    if (ret)
+    {
+        dev_err(&pdev->dev, "Failed to set consistent DMA mask\n");
+        goto err_release_regions;
+    }
+#endif
+
+#else
+    dev_warn(&pdev->dev, "DMA API not available, skipping DMA mask setup\n");
+#endif
     
     /*map VIRTIO capablilties */ 
     ret = virtio_pci_find_caps(vpci_dev); 

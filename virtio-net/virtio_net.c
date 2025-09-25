@@ -5,6 +5,7 @@
 #include <linux/virtio_net.h>
 #include <linux/virtio_pci.h> 
 #include <linux/scatterlist.h>
+#include <linux/skbuff.h>
 #include "virtio_net.h"
 
 int virtio_net_open(struct net_device *dev)
@@ -59,17 +60,16 @@ int virtio_net_stop(struct net_device *dev)
 
 netdev_tx_t virtio_net_xmit(struct sk_buff *skb, struct net_device *dev)
 {
-    int sg_entries_len = 1;
     struct virtio_net_dev *vnet_dev = netdev_priv(dev);
     struct virtio_pci_dev *vpci_dev = vnet_dev->vpci_dev;
     struct virtqueue *vq = vpci_dev->vqs[VIRTIO_NET_QUEUE_TX]; /*transimit virtqueue */
-    struct scatterlist sg[sg_entries_len];
+    struct scatterlist sg[1];
     int ret;
 
     sg_init_one(sg, skb->data, skb->len); 
 
     /*add buffer to TX queue */
-    ret = virtqueue_add_outbuf(vq, sg, sg_entries_len, skb, GFP_ATOMIC);
+    ret = virtqueue_add_outbuf(vq, sg, 1, skb, GFP_ATOMIC);
     if(ret)
     {
         dev_kfree_skb(skb);
@@ -105,6 +105,37 @@ static const struct net_device_ops virtio_netdev_ops = {
 };
 
 /*recieve packet */
+
+void virtio_net_receive(struct virtqueue *vq)
+{
+    struct virtio_net_dev *vnet_dev = vq->vdev->priv;  // get your net device
+    struct virtio_pci_dev *vpci_dev = vnet_dev->vpci_dev;
+    struct sk_buff *skb;
+    void *buf;
+    unsigned len;
+
+    while ((buf = virtqueue_get_buf(vq, &len)) != NULL)
+    {
+        skb = netdev_alloc_skb(vnet_dev->netdev, len);
+        if (!skb)
+        {
+            vnet_dev->netdev->stats.rx_dropped++;
+            continue;
+        }
+
+        void *dst_addr = skb_put(skb, len);
+        memcpy(dst_addr, buf, len);
+
+        skb->protocol = eth_type_trans(skb, vnet_dev->netdev);
+        netif_rx(skb);
+
+        struct scatterlist sg[1];
+        sg_init_one(sg, buf, len);
+        virtqueue_add_inbuf(vq, sg, 1, buf, GFP_ATOMIC);
+    }
+}
+
+/*
 void virtio_net_receive(struct virtio_net_dev *vnet_dev) 
 {
     struct virtio_pci_dev *vpci_dev = vnet_dev->vpci_dev;
@@ -113,11 +144,11 @@ void virtio_net_receive(struct virtio_net_dev *vnet_dev)
     void *buf;
     unsigned len;
 
-    /*vq : virtqueue we are chcking *
-    * &len : ptr to len of data written */
+    //vq : virtqueue we are chcking 
+    //&len : ptr to len of data written 
     while((buf = virtqueue_get_buf(vq, &len)) != NULL)
     {
-        /*allocate new socket buffer */
+        /*allocate new socket buffer 
         skb = netdev_alloc_skb(vnet_dev->netdev, len);
         if(!skb)
         {
@@ -130,16 +161,16 @@ void virtio_net_receive(struct virtio_net_dev *vnet_dev)
 
         skb->protocol = eth_type_trans(skb, vnet_dev->netdev);
 
-        /*hand over to kernel network stack */
+        /*hand over to kernel network stack 
         netif_rx(skb);
 
-        /*re-add buffer to RX queue */
+        /*re-add buffer to RX queue 
         struct scatterlist sg[1];
         sg_init_one(sg, buf, len);
         virtqueue_add_inbuf(vq, sg, 1, buf, GFP_ATOMIC); 
     }
 }
-
+*/ 
 /*initialize virtio-net device */
 int virtio_net_init(struct virtio_pci_dev *vpci_dev)
 {

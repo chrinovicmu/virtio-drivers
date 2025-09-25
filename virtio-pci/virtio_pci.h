@@ -8,7 +8,6 @@
 #include <linux/pci.h> 
 #include <linux/virtio_pci.h>
 #include <linux/spinlock.h> 
-
 /* Offsets for fields in struct virtio_pci_cap */
 #define VIRTIO_PCI_CAP_VNDR_OFFSET      0  /* cap_vndr, cap_next, cap_len, cfg_type */
 #define VIRTIO_PCI_CAP_BAR_OFFSET       4  /* bar, id, padding[2] */
@@ -37,6 +36,8 @@
 
 #ifndef PCI_DEVICE_ID_VIRTIO_NET
 #define PCI_DEVICE_ID_VIRTIO_NET 0x1000
+
+#define VIRTIO_CONFIG_S_RESET       0x00 
 #endif
 
 
