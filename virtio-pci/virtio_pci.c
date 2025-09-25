@@ -6,6 +6,7 @@
 #include <linux/slab.h>
 #include <linux/errno.h> 
 #include <linux/virtio_pci.h>
+#include <linux/dma-mapping.h> 
 #include <linux/virtio.h> 
 #include <linux/virtio_ids.h> 
 #include "virtio_net.h"
@@ -115,11 +116,11 @@ static void virtio_pci_set_features(struct virtio_device *vdev, u64 features)  /
 {
     struct virtio_pci_dev *vpci_dev = vdev->priv;
 
-    iowrite32(VIRTIO_FSEL_0_31, &vpci_dev->common_cfg->device_feature_select); 
-    iowrite32(features & 0xFFFFFFFF, &vpci_dev->common_cfg->device_feature);
+    iowrite32(VIRTIO_FSEL_0_31, &vpci_dev->common_cfg->guest_feature_select); 
+    iowrite32(features & 0xFFFFFFFF, &vpci_dev->common_cfg->guest_feature);
 
-    iowrite32(VIRTIO_FSEL_32_63, &vpci_dev->common_cfg->device_feature_select);  
-    iowrite32(features >> 32, &vpci_dev->common_cfg->device_feature);
+    iowrite32(VIRTIO_FSEL_32_63, &vpci_dev->common_cfg->guest_feature_select);  
+    iowrite32(features >> 32, &vpci_dev->common_cfg->guest_feature);
 
 }
 
@@ -390,6 +391,7 @@ static int virtio_pci_map_notify_cfg(struct virtio_pci_dev *vpci_dev, u8 pos)
     struct pci_dev *pdev = vpci_dev->pdev; 
     struct virtio_pci_notify_cap notify_cap = {0}; 
     void __iomem *bar_base;  /*ptr to mapped BAR region */ 
+    void __iomem *notify_base; 
     int ret; 
 
     /*read entire virtio_pci_notify_cap structure (20 bytes)
@@ -459,6 +461,14 @@ static int virtio_pci_map_notify_cfg(struct virtio_pci_dev *vpci_dev, u8 pos)
         return -EINVAL;
     }
 
+    /*validate offse + lenght doesn't excced BAR size */ 
+    if((notify_cap.cap.offset + notify_cap.cap.length) > pci_resource_len(pdev, notify_cap.cap.bar))
+    {
+        dev_err(&pdev->dev, "Notify cfg excced beyopng BAR %bounds\n",
+                notify_cap.cap.bar); 
+        return -EINVAL; 
+    }
+
     bar_base = pci_ioremap_bar(pdev, notify_cap.cap.bar); 
     if(!bar_base)
     {
@@ -482,16 +492,20 @@ static int virtio_pci_map_notify_cfg(struct virtio_pci_dev *vpci_dev, u8 pos)
     }
 
     *vpci_dev->notify_cap = notify_cap;
-    vpci_dev->notify_cap->cap.offset = bar_base + notify_cap.cap.offset; 
-    vpci_dev->notify_cap->bar_base = bar_base; 
+
+    notify_base = bar_base + notify_cap.cap.offset; 
+    vpci_dev->notify_cap_base = bar_base;
+    vpci_dev->notify_base =  notify_base; 
 
     /*verify if mapped region is accessible */ 
-    if (ioread16(vpci_dev->notify_cap->cap.offset) == 0xFFFF)
+    if (ioread16(vpci_dev->notify_base) == 0xFFFF)
     {
         dev_err(&pdev->dev, "Notify cfg region at BAR %d offset 0x%x is invalid\n",
                 notify_cap.cap.bar, notify_cap.cap.offset);
         kfree(vpci_dev->notify_cap);
         vpci_dev->notify_cap = NULL;
+        vpci_dev->notify_cap_base = NULL;
+        vpci_dev->notify_base =  NULL;
         iounmap(bar_base);
         return -EIO;
     }
@@ -557,7 +571,8 @@ static int virtio_pci_map_isr_cfg(struct virtio_pci_dev *vpci_dev, u8 pos)
     }
 
     /* validate the length (must be sufficient for struct virtio_pci_isr_data) */ 
-    if (cap.length < 4 {
+    if (cap.length < 4 )
+    {
         dev_err(&pdev->dev, "ISR cfg capability length %d too small\n", cap.length);
         return -EINVAL;
     }
@@ -572,11 +587,12 @@ static int virtio_pci_map_isr_cfg(struct virtio_pci_dev *vpci_dev, u8 pos)
 
     vpci_dev->isr_data = bar_base + cap.offset;
 
-    if (ioread32(vpci_dev->isr_data) == 0xFFFFFFFF) {
+    if (ioread32(vpci_dev->isr_data) == 0xFFFFFFFF)
+    {
         dev_err(&pdev->dev, "ISR cfg region at BAR %d offset 0x%x is invalid\n",
                 cap.bar, cap.offset);
 
-        iounmap(base);
+        iounmap(bar_base);
         vpci_dev->isr_data = NULL;
         vpci_dev->isr_bar_base = NULL; 
         return -EIO;
@@ -863,38 +879,50 @@ static void virtio_pci_cleanup_interrupts(struct virtio_pci_dev *vpci_dev)
     pci_free_irq_vectors(pdev); 
 }
 
+
 static int virtio_pci_enable_device(struct virtio_pci_dev *vpci_dev)
 {
-    struct virtio_device *vdev = &vpci_dev->virtio_dev; 
-    u8 status; 
+    struct virtio_device *vdev = &vpci_dev->virtio_dev;
+    u8 status;
+    u32 device_features, guest_features;
 
-    /*acknowledge device */ 
+    /* acknowledge device */
     status = ioread8(&vpci_dev->common_cfg->device_status);
-    iowrite8(status | VIRTIO_CONFIG_S_ACKNOWLEDGE, &vpci_dev->common_cfg->device_status); 
+    iowrite8(status | VIRTIO_CONFIG_S_ACKNOWLEDGE,
+             &vpci_dev->common_cfg->device_status);
 
-    /*set driver status*/ 
-    status = ioread8(&vpci_dev->common_cfg->device_status); 
-    iowrite8(status | VIRTIO_CONFIG_S_DRIVER, &vpci_dev->common_cfg->device_status); 
-    
-    /*negotiate features */
-    vdev->features = ioread64(&vpci_dev->common_cfg->device_feature); 
-    vdev->features &= (1ULL << VIRTIO_F_VERSION_1); /*virtio 1.0+ */
-    iowrite64(vdev->features, &vpci_dev->common_cfg->driver_feature);
+    /* set driver status */
+    status = ioread8(&vpci_dev->common_cfg->device_status);
+    iowrite8(status | VIRTIO_CONFIG_S_DRIVER,
+             &vpci_dev->common_cfg->device_status);
 
-    /*features okay */ 
-    status = ioread8(&vpci_dev->common_cfg->device_status); 
-    iowrite8(status | VIRTIO_CONFIG_S_FEATURES_OK, &vpci_dev->common_cfg->device_status); 
+    /* read device features */
+    device_features = ioread32(&vpci_dev->common_cfg->device_feature);
 
-    /*check features*/ 
-    status = ioread8(&vpci_dev->common_cfg->device_status); 
-    if(!(status & VIRTIO_CONFIG_S_FEATURES_OK))
-    {
-        dev_err(&vpci_dev->pdev->dev, "Failed to negotiate features\n"); 
-        return -EINVAL; 
+    /* select features we want */
+    guest_features = device_features & (1ULL<< VIRTIO_F_VERSION_1);
+    vdev->features = guest_features;
+
+    /* write accepted features to guest_feature */
+    iowrite32(guest_features, &vpci_dev->common_cfg->guest_feature);
+
+    /* features OK */
+    status = ioread8(&vpci_dev->common_cfg->device_status);
+    iowrite8(status | VIRTIO_CONFIG_S_FEATURES_OK,
+             &vpci_dev->common_cfg->device_status);
+
+    /* check features OK */
+    status = ioread8(&vpci_dev->common_cfg->device_status);
+    if (!(status & VIRTIO_CONFIG_S_FEATURES_OK)) {
+        dev_err(&vpci_dev->pdev->dev, "Failed to negotiate features\n");
+        return -EINVAL;
     }
 
-    iowrite8(status | VIRTIO_CONFIG_S_DRIVER_OK, &vpci_dev->common_cfg->device_status);
-    return 0; 
+    /* set driver OK */
+    iowrite8(status | VIRTIO_CONFIG_S_DRIVER_OK,
+             &vpci_dev->common_cfg->device_status);
+
+    return 0;
 }
 
 static int virtio_pci_probe(struct pci_dev *pdev, const struct pci_device_id *id)
@@ -964,7 +992,7 @@ static int virtio_pci_probe(struct pci_dev *pdev, const struct pci_device_id *id
 
     /*set up 3 virtqueues (RX, TX, CTRL) */
     ret = virtio_pci_find_vqs(&vpci_dev->virtio_dev, 3, vpci_dev->vqs, 
-                              (vq_callback_t *[]){virtio_net_receive_packet, NULL, NULL}, 
+                              (vq_callback_t *[]){virtio_net_receive, NULL, NULL}, 
                               (const char*[]){"rx", "tx", "ctrl"}, NULL, NULL);
 
     if(ret)
@@ -1048,35 +1076,59 @@ static void virtio_pci_remove(struct pci_dev *pdev)
     struct virtio_pci_dev *vpci_dev = pci_get_drvdata(pdev); 
     struct virtio_net_dev *vnet_dev = vpci_dev->virtio_dev.priv;
 
+    /* unregister virtio device */
     unregister_virtio_device(&vpci_dev->virtio_dev); 
 
-    if(vpci_dev->virtio_dev.id.device == PCI_DEVICE_ID_VIRTIO_NET && vnet_dev)
+    /* clean up virtio-net specific device */
+    if (vpci_dev->virtio_dev.id.device == PCI_DEVICE_ID_VIRTIO_NET && vnet_dev)
         virtio_net_exit(vnet_dev); 
 
-    /*reset the device */ 
-    iowrite8(VIRTIO_CONFIG_S_RESET, &vpci_dev->common_cfg->device_status);
+    /* reset the device */
+    if (vpci_dev->common_cfg)
+        iowrite8(VIRTIO_CONFIG_S_RESET, &vpci_dev->common_cfg->device_status);
 
+    /* delete virtqueues */
     virtio_pci_del_vqs(&vpci_dev->virtio_dev); 
+
+    /* cleanup interrupts */
     virtio_pci_cleanup_interrupts(vpci_dev);
 
-    if(vpci_dev->device_cfg)
+    /* unmap device config */
+    if (vpci_dev->device_cfg) {
         iounmap(vpci_dev->device_cfg); 
-
-    if(vpci_dev->isr_data)
-        iounmap(vpci_dev->isr_data); 
-
-    if(vpci_dev->notify_cap)
-    {
-        /*unmap notifcation region */ 
-        iounmap((void __iomem *)(unsigned long)vpci_dev->notify_cap->cap.offset); 
-        kfree(vpci_dev->notify_cap); 
+        vpci_dev->device_cfg = NULL;
+        vpci_dev->device_cfg_base = NULL;
     }
 
-    if(vpci_dev->common_cfg)
-        iounmap(vpci_dev->common_cfg); 
+    /* unmap ISR */
+    if (vpci_dev->isr_data) {
+        iounmap(vpci_dev->isr_data); 
+        vpci_dev->isr_data = NULL;
+        vpci_dev->isr_bar_base = NULL;
+    }
 
+    /* unmap notify capability */
+    if (vpci_dev->notify_cap) {
+        if (vpci_dev->notify_cap_base)
+            iounmap(vpci_dev->notify_cap_base); 
+        kfree(vpci_dev->notify_cap);
+        vpci_dev->notify_cap = NULL;
+        vpci_dev->notify_cap_base = NULL;
+        vpci_dev->notify_base = NULL;
+    }
+
+    /* unmap common config */
+    if (vpci_dev->common_cfg) {
+        iounmap(vpci_dev->common_cfg); 
+        vpci_dev->common_cfg = NULL;
+        vpci_dev->common_cfg_base = NULL;
+    }
+
+    /* release PCI resources */
     pci_release_regions(pdev); 
     pci_disable_device(pdev); 
+
+    /* finally free the virtio_pci_dev struct */
     kfree(vpci_dev); 
 }
 

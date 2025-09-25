@@ -52,6 +52,7 @@ struct virtio_pci_dev {
 
     struct virtio_pci_notify_cap *notify_cap;
     void __iomem *notify_cap_base; 
+    void __iomem *notify_base; 
 
     void __iomem *isr_data; 
     void __iomem *isr_bar_base; 
